@@ -64,3 +64,12 @@ jobs:
 
       - name: Copy metadata alongside the outputs
         run: cp "weeks/${{ steps.detect.outputs.week }}/metadata.json" "weeks/${{ steps.detect.outputs.week }}/output/metadata.json"
+
+      - name: Upload video outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-${{ steps.detect.outputs.week }}
+          path: |
+            weeks/${{ steps.detect.outputs.week }}/output/*.mp4
+            weeks/${{ steps.detect.outputs.week }}/output/thumbnail.jpg
+            weeks/${{ steps.detect.outputs.week }}/output/metadata.json
