@@ -24,13 +24,41 @@ DESIGN NOTES
   look that reads well even at small preview sizes.
 """
 
+import os
 import sys
 from PIL import Image, ImageDraw, ImageFont
 
 THUMBNAIL_WIDTH = 1280   # YouTube's recommended thumbnail size
 THUMBNAIL_HEIGHT = 720
 
-FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"  # swap this for your own bold .ttf if you have one
+# A bold font is required for the classic thumbnail look. The exact file
+# location differs between operating systems, so we check a list of common
+# locations for Windows, macOS, and Linux (the GitHub Actions runner uses
+# Linux) and use whichever one actually exists on the machine running this.
+CANDIDATE_FONT_PATHS = [
+    r"C:\Windows\Fonts\ariblk.ttf",                              # Windows: Arial Black
+    r"C:\Windows\Fonts\arialbd.ttf",                             # Windows: Arial Bold (fallback)
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",         # macOS
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",      # Linux (GitHub Actions runner)
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",  # Linux fallback
+]
+
+
+def find_font_path():
+    for path in CANDIDATE_FONT_PATHS:
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError(
+        "Could not find a bold font on this system. Checked:\n"
+        + "\n".join(f"  - {p}" for p in CANDIDATE_FONT_PATHS)
+        + "\n\nTo fix: find any bold .ttf font file on your computer "
+        "(on Windows, look in C:\\Windows\\Fonts\\ for a file ending in "
+        "'bd.ttf' or 'Bold.ttf') and add its exact path to "
+        "CANDIDATE_FONT_PATHS at the top of this script."
+    )
+
+
+FONT_PATH = find_font_path()
 MAX_FONT_SIZE = 110
 MIN_FONT_SIZE = 50
 TEXT_COLOR = (255, 255, 255)
@@ -133,8 +161,59 @@ def generate_thumbnail(source_image_path, text, output_path, font_path=FONT_PATH
     print(f"Thumbnail saved to: {output_path}")
 
 
+DEFAULT_THUMBNAIL_TEXT = "WATCH NOW"  # used only if metadata.json has no thumbnail_text and no video_title either
+
+
+def resolve_thumbnail_inputs(metadata_path):
+    """
+    Reads metadata.json and figures out which source image and text to use
+    for the thumbnail, with safe fallbacks so a missing key never crashes
+    the build:
+      - thumbnail_source_image: uses metadata's value if present, otherwise
+        just picks the first image (alphabetically) in the images/ folder
+        next to metadata.json.
+      - thumbnail_text: uses metadata's value if present, otherwise falls
+        back to video_title, otherwise a generic default.
+    """
+    metadata_dir = os.path.dirname(os.path.abspath(metadata_path))
+    with open(metadata_path, "r", encoding="utf-8") as f:
+        metadata = json.load(f)
+
+    source_image = metadata.get("thumbnail_source_image")
+    if source_image:
+        source_image = os.path.join(metadata_dir, source_image)
+    else:
+        images_dir = os.path.join(metadata_dir, "images")
+        candidates = sorted(
+            f for f in os.listdir(images_dir)
+            if f.lower().endswith((".png", ".jpg", ".jpeg"))
+        ) if os.path.isdir(images_dir) else []
+        if not candidates:
+            raise FileNotFoundError(
+                f"No thumbnail_source_image set in metadata.json, and no images "
+                f"found in {images_dir} to fall back on."
+            )
+        source_image = os.path.join(images_dir, candidates[0])
+        print(f"No thumbnail_source_image in metadata.json -- defaulting to first image: {candidates[0]}")
+
+    text = metadata.get("thumbnail_text") or metadata.get("video_title") or DEFAULT_THUMBNAIL_TEXT
+    if "thumbnail_text" not in metadata:
+        print(f"No thumbnail_text in metadata.json -- defaulting to: {text}")
+
+    return source_image, text
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("Usage: python make_thumbnail.py <source_image> <text> <output_path>")
+    if len(sys.argv) == 3:
+        # New, simpler usage: python make_thumbnail.py metadata.json output/thumbnail.jpg
+        metadata_path, output_path = sys.argv[1], sys.argv[2]
+        source_image, text = resolve_thumbnail_inputs(metadata_path)
+        generate_thumbnail(source_image, text, output_path)
+    elif len(sys.argv) == 4:
+        # Old usage still works too: python make_thumbnail.py <source_image> <text> <output_path>
+        generate_thumbnail(sys.argv[1], sys.argv[2], sys.argv[3])
+    else:
+        print("Usage:")
+        print("  python make_thumbnail.py <metadata.json> <output_path>")
+        print("  python make_thumbnail.py <source_image> <text> <output_path>")
         raise SystemExit(1)
-    generate_thumbnail(sys.argv[1], sys.argv[2], sys.argv[3])
