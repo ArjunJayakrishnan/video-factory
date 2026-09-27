@@ -24,6 +24,7 @@ DESIGN NOTES
   look that reads well even at small preview sizes.
 """
 
+import json
 import os
 import sys
 from PIL import Image, ImageDraw, ImageFont
