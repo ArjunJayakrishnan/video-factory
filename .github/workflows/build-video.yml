@@ -21,7 +21,7 @@ jobs:
       - name: Check out the repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2   # need the previous commit too, to detect which week folder changed
+          fetch-depth: 2 # need the previous commit too, to detect which week folder changed
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -50,15 +50,17 @@ jobs:
           echo "Building week folder: $WEEK"
           echo "week=$WEEK" >> "$GITHUB_OUTPUT"
 
-      - name: Build the video
-        run: python scripts/make_video.py "weeks/${{ steps.detect.outputs.week }}"
+      - name: Build the video (preview or full, based on PREVIEW_MODE in the script)
+        working-directory: weeks/${{ steps.detect.outputs.week }}
+        run: python ../../scripts/make_video.py
 
       - name: Build the thumbnail
+        working-directory: weeks/${{ steps.detect.outputs.week }}
         run: |
-          python scripts/make_thumbnail.py \
-            "weeks/${{ steps.detect.outputs.week }}/$(python -c "import json;print(json.load(open('weeks/${{ steps.detect.outputs.week }}/metadata.json'))['thumbnail_source_image'])")" \
-            "$(python -c "import json;print(json.load(open('weeks/${{ steps.detect.outputs.week }}/metadata.json'))['thumbnail_text'])")" \
-            "weeks/${{ steps.detect.outputs.week }}/output/thumbnail.jpg"
+          python ../../scripts/make_thumbnail.py \
+            "$(python -c "import json;print(json.load(open('metadata.json'))['thumbnail_source_image'])")" \
+            "$(python -c "import json;print(json.load(open('metadata.json'))['thumbnail_text'])")" \
+            "output/thumbnail.jpg"
 
       - name: Copy metadata alongside the outputs
         run: cp "weeks/${{ steps.detect.outputs.week }}/metadata.json" "weeks/${{ steps.detect.outputs.week }}/output/metadata.json"
@@ -69,7 +71,7 @@ jobs:
           tag_name: ${{ steps.detect.outputs.week }}
           name: "Video build - ${{ steps.detect.outputs.week }}"
           files: |
-            weeks/${{ steps.detect.outputs.week }}/output/final_video.mp4
+            weeks/${{ steps.detect.outputs.week }}/output/*.mp4
             weeks/${{ steps.detect.outputs.week }}/output/thumbnail.jpg
             weeks/${{ steps.detect.outputs.week }}/output/metadata.json
         env:
