@@ -1,0 +1,76 @@
+name: Build Video
+
+# Runs automatically whenever you push a new/updated week folder,
+# and can also be triggered manually from the Actions tab for testing.
+on:
+  push:
+    paths:
+      - "weeks/**"
+  workflow_dispatch:
+    inputs:
+      week_folder:
+        description: "Week folder name to build (e.g. 2026-10-04). Leave blank to auto-detect from the latest push."
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # need the previous commit too, to detect which week folder changed
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Figure out which week folder to build
+        id: detect
+        run: |
+          if [ -n "${{ github.event.inputs.week_folder }}" ]; then
+            WEEK="${{ github.event.inputs.week_folder }}"
+          else
+            # Find the week folder(s) touched by the most recent commit.
+            WEEK=$(git diff --name-only HEAD^ HEAD -- weeks/ | cut -d/ -f2 | sort -u | tail -n 1)
+          fi
+          if [ -z "$WEEK" ]; then
+            echo "Could not determine which week folder to build. Pass week_folder manually." >&2
+            exit 1
+          fi
+          echo "Building week folder: $WEEK"
+          echo "week=$WEEK" >> "$GITHUB_OUTPUT"
+
+      - name: Build the video
+        run: python scripts/make_video.py "weeks/${{ steps.detect.outputs.week }}"
+
+      - name: Build the thumbnail
+        run: |
+          python scripts/make_thumbnail.py \
+            "weeks/${{ steps.detect.outputs.week }}/$(python -c "import json;print(json.load(open('weeks/${{ steps.detect.outputs.week }}/metadata.json'))['thumbnail_source_image'])")" \
+            "$(python -c "import json;print(json.load(open('weeks/${{ steps.detect.outputs.week }}/metadata.json'))['thumbnail_text'])")" \
+            "weeks/${{ steps.detect.outputs.week }}/output/thumbnail.jpg"
+
+      - name: Copy metadata alongside the outputs
+        run: cp "weeks/${{ steps.detect.outputs.week }}/metadata.json" "weeks/${{ steps.detect.outputs.week }}/output/metadata.json"
+
+      - name: Publish outputs as a GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.detect.outputs.week }}
+          name: "Video build - ${{ steps.detect.outputs.week }}"
+          files: |
+            weeks/${{ steps.detect.outputs.week }}/output/final_video.mp4
+            weeks/${{ steps.detect.outputs.week }}/output/thumbnail.jpg
+            weeks/${{ steps.detect.outputs.week }}/output/metadata.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

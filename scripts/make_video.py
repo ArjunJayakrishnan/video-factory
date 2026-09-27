@@ -1,0 +1,1126 @@
+#!/usr/bin/env python3
+"""
+make_video.py
+============
+
+YouTube cinematic video generator.
+
+IMPORTANT DESIGN CHANGE
+-----------------------
+Animated ZOOM has been intentionally removed because it caused visible
+shivering/flickering in the source images.
+
+Instead, the video uses cinematic effects based on CROPPING / STATIC
+IMAGES / TRANSITIONS.
+
+The main control is:
+
+    EFFECTS_NEEDED = [
+        "horizontal_pan",
+        "vertical_pan",
+        "diagonal_drift",
+        "static_hold",
+        "subtle_parallax",
+        "crossfade",
+    ]
+
+You can add/remove effects from that list.
+
+The same EFFECTS_NEEDED setting is used by:
+    1. the 10-second preview
+    2. the full video
+
+So the preview is a real test of the motion system used by the final video.
+
+AVAILABLE EFFECTS
+-----------------
+"horizontal_pan"
+    Slow left <-> right camera movement.
+
+"vertical_pan"
+    Slow up/down camera movement.
+
+"diagonal_drift"
+    Slow diagonal camera movement.
+
+"static_hold"
+    Completely static image.
+    Recommended for images containing lots of small details or text.
+
+"subtle_parallax"
+    Very subtle layered-depth treatment.
+    This is deliberately conservative and does NOT use animated zoom.
+
+"crossfade"
+    Smooth transition between scenes.
+
+Example:
+
+    EFFECTS_NEEDED = [
+        "horizontal_pan",
+        "vertical_pan",
+        "diagonal_drift",
+        "static_hold",
+        "subtle_parallax",
+        "crossfade",
+    ]
+
+The script automatically cycles through the selected effects.
+
+PREVIEW
+-------
+Set:
+
+    PREVIEW_MODE = True
+
+to create only a 10-second test:
+
+    output/preview_TEST.mp4
+
+When ready for the full video:
+
+    PREVIEW_MODE = False
+
+The full output is:
+
+    output/final_video.mp4
+
+REQUIREMENTS
+------------
+pip install moviepy pillow elevenlabs openai-whisper
+
+FFmpeg must also be installed and available on PATH.
+"""
+
+import os
+import math
+import shutil
+import subprocess
+from pathlib import Path
+
+from PIL import Image, ImageFilter, ImageEnhance
+
+from moviepy import (
+    AudioFileClip,
+    ImageClip,
+    CompositeVideoClip,
+    concatenate_videoclips,
+)
+
+# ============================================================
+# USER SETTINGS
+# ============================================================
+
+# ------------------------------------------------------------
+# PREVIEW
+# ------------------------------------------------------------
+
+# True  = render only a 10-second test
+# False = render the complete video
+PREVIEW_MODE = False
+
+PREVIEW_SECONDS = 20
+
+# ------------------------------------------------------------
+# CINEMATIC EFFECTS
+# ------------------------------------------------------------
+
+# Choose the effects you want available to the video.
+#
+# The video will cycle through these effects as it moves from
+# image to image.
+#
+# You can use one effect:
+#
+# EFFECTS_NEEDED = ["horizontal_pan"]
+#
+# Or several:
+#
+# EFFECTS_NEEDED = [
+#     "horizontal_pan",
+#     "vertical_pan",
+#     "diagonal_drift",
+#     "static_hold",
+#     "subtle_parallax",
+#     "crossfade",
+# ]
+#
+# Recommended starting setup:
+EFFECTS_NEEDED = [
+    "horizontal_pan",
+    "vertical_pan",
+    "diagonal_drift",
+    "static_hold",
+    "subtle_parallax",
+    "crossfade",
+]
+
+# ------------------------------------------------------------
+# VIDEO
+# ------------------------------------------------------------
+
+VIDEO_WIDTH = 1920
+VIDEO_HEIGHT = 1080
+
+FPS = 60
+BITRATE = "18M"
+
+# Extra image area used for camera movement.
+#
+# IMPORTANT:
+# This is NOT an animated zoom.
+#
+# Each source image is resized ONCE before playback and then
+# the video simply moves a 1920x1080 crop window over that
+# oversized static image.
+OVERSIZE_FACTOR = 1.20
+PAN_RANGE_FRACTION = 0.4   # lower = slower pan (e.g. 0.2 for very slow, 1.0 for original full-range speed)
+
+# Length of the transition between images.
+CROSSFADE_DURATION = 0.6
+
+# Fade at the very beginning/end of the complete video.
+START_FADE = 0.25
+END_FADE = 1.0
+
+# ------------------------------------------------------------
+# INPUT / OUTPUT
+# ------------------------------------------------------------
+
+IMAGE_DIR = Path("images")
+OUTPUT_DIR = Path("output")
+
+NARRATION_PATH = OUTPUT_DIR / "narration.mp3"
+
+PREVIEW_OUTPUT = OUTPUT_DIR / "preview_TEST.mp4"
+FINAL_OUTPUT = OUTPUT_DIR / "final_video.mp4"
+
+# ============================================================
+# OPTIONAL AUDIO / CAPTION SETTINGS
+# ============================================================
+
+# If your existing workflow already creates narration.mp3,
+# leave this as-is.
+#
+# The script will use:
+#     output/narration.mp3
+
+# ============================================================
+# EFFECT VALIDATION
+# ============================================================
+
+VALID_EFFECTS = {
+    "horizontal_pan",
+    # "diagonal_drift",
+    "static_hold",
+    "subtle_parallax",
+    "crossfade",
+    "vertical_pan"
+}
+
+if not EFFECTS_NEEDED:
+    raise ValueError(
+        "EFFECTS_NEEDED cannot be empty. "
+        "Choose at least one cinematic effect."
+    )
+
+unknown_effects = set(EFFECTS_NEEDED) - VALID_EFFECTS
+
+if unknown_effects:
+    raise ValueError(
+        f"Unknown effect(s): {sorted(unknown_effects)}\n"
+        f"Valid effects: {sorted(VALID_EFFECTS)}"
+    )
+
+# ============================================================
+# GENERAL HELPERS
+# ============================================================
+
+
+def run_command(command):
+    print("\n>", " ".join(str(x) for x in command))
+    subprocess.run(command, check=True)
+
+
+def ease_in_out(t):
+    """Smooth camera movement instead of constant linear movement."""
+    t = max(0.0, min(1.0, t))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def get_images():
+    """Return supported images in deterministic order."""
+    if not IMAGE_DIR.exists():
+        raise RuntimeError(
+            f"Image directory does not exist: {IMAGE_DIR.resolve()}"
+        )
+
+    images = [
+        p
+        for p in sorted(IMAGE_DIR.iterdir())
+        if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+    ]
+
+    if not images:
+        raise RuntimeError(
+            f"No images found in {IMAGE_DIR.resolve()}"
+        )
+
+    return images
+
+
+def ensure_output_dir():
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ============================================================
+# IMAGE PREPARATION
+# ============================================================
+
+
+def prepare_oversized_image(image_path):
+    """
+    Prepare the source image ONCE.
+
+    The resulting image is larger than 1920x1080.
+
+    During video playback we crop from this static image.
+
+    This is intentionally different from:
+        clip.resized(lambda t: ...)
+
+    because continuous raster resizing was the source of the
+    shivering seen in the earlier versions.
+    """
+
+    image = Image.open(image_path).convert("RGB")
+
+    canvas_width = int(VIDEO_WIDTH * OVERSIZE_FACTOR)
+    canvas_height = int(VIDEO_HEIGHT * OVERSIZE_FACTOR)
+
+    target_ratio = canvas_width / canvas_height
+    source_ratio = image.width / image.height
+
+    # Fit image inside the oversized 16:9 canvas.
+    if source_ratio > target_ratio:
+        new_height = canvas_height
+        new_width = int(
+            image.width * new_height / image.height
+        )
+    else:
+        new_width = canvas_width
+        new_height = int(
+            image.height * new_width / image.width
+        )
+
+    image = image.resize(
+        (new_width, new_height),
+        Image.Resampling.LANCZOS,
+    )
+
+    # Center crop to exact oversized canvas size.
+    left = max(0, (new_width - canvas_width) // 2)
+    top = max(0, (new_height - canvas_height) // 2)
+
+    image = image.crop(
+        (
+            left,
+            top,
+            left + canvas_width,
+            top + canvas_height,
+        )
+    )
+
+    return image
+
+
+def prepare_exact_frame(image_path):
+    """
+    Prepare a 1920x1080 static frame.
+
+    Used for STATIC_HOLD and CROSSFADE.
+    """
+
+    image = Image.open(image_path).convert("RGB")
+
+    source_ratio = image.width / image.height
+    target_ratio = VIDEO_WIDTH / VIDEO_HEIGHT
+
+    if source_ratio > target_ratio:
+        new_height = VIDEO_HEIGHT
+        new_width = int(
+            image.width * new_height / image.height
+        )
+    else:
+        new_width = VIDEO_WIDTH
+        new_height = int(
+            image.height * new_width / image.width
+        )
+
+    image = image.resize(
+        (new_width, new_height),
+        Image.Resampling.LANCZOS,
+    )
+
+    left = max(0, (new_width - VIDEO_WIDTH) // 2)
+    top = max(0, (new_height - VIDEO_HEIGHT) // 2)
+
+    image = image.crop(
+        (
+            left,
+            top,
+            left + VIDEO_WIDTH,
+            top + VIDEO_HEIGHT,
+        )
+    )
+
+    return image
+
+
+def save_temp_image(image, name):
+    temp_dir = OUTPUT_DIR / "_cinematic_temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    path = temp_dir / name
+    image.save(path, quality=96)
+
+    return path
+
+
+# ============================================================
+# CAMERA POSITIONS
+# ============================================================
+
+
+def get_motion_positions(effect, index, max_x, max_y):
+    range_x = max_x * PAN_RANGE_FRACTION
+    range_y = max_y * PAN_RANGE_FRACTION
+    start_offset_x = (max_x - range_x) / 2
+    start_offset_y = (max_y - range_y) / 2
+
+    center_x = max_x // 2
+    center_y = max_y // 2
+
+    if effect == "horizontal_pan":
+        if index % 2 == 0:
+            return (start_offset_x, center_y, start_offset_x + range_x, center_y)
+        return (start_offset_x + range_x, center_y, start_offset_x, center_y)
+
+    if effect == "vertical_pan":
+        if index % 2 == 0:
+            return (center_x, start_offset_y, center_x, start_offset_y + range_y)
+        return (center_x, start_offset_y + range_y, center_x, start_offset_y)
+
+    if effect == "diagonal_drift":
+        patterns = [
+            (start_offset_x, start_offset_y, start_offset_x + range_x, start_offset_y + range_y),
+            (start_offset_x + range_x, start_offset_y, start_offset_x, start_offset_y + range_y),
+            (start_offset_x, start_offset_y + range_y, start_offset_x + range_x, start_offset_y),
+            (start_offset_x + range_x, start_offset_y + range_y, start_offset_x, start_offset_y),
+        ]
+        return patterns[index % len(patterns)]
+
+    return (center_x, center_y, center_x, center_y)
+
+# ============================================================
+# PAN / DRIFT CLIPS
+# ============================================================
+
+
+def make_pan_clip(image_path, duration, effect, index):
+    """
+    Creates horizontal pan, vertical pan, or diagonal drift.
+
+    The image is resized ONCE.
+
+    During playback only the crop window moves.
+    """
+
+    oversized = prepare_oversized_image(image_path)
+
+    temp_path = save_temp_image(
+        oversized,
+        f"oversized_{index:05d}.jpg",
+    )
+
+    canvas_width, canvas_height = oversized.size
+
+    max_x = max(
+        0,
+        canvas_width - VIDEO_WIDTH,
+    )
+
+    max_y = max(
+        0,
+        canvas_height - VIDEO_HEIGHT,
+    )
+
+    start_x, start_y, end_x, end_y = (
+        get_motion_positions(
+            effect,
+            index,
+            max_x,
+            max_y,
+        )
+    )
+
+    base = ImageClip(str(temp_path)).with_duration(duration)
+
+    def crop_frame(get_frame, t):
+        frame = get_frame(t)
+
+        progress = ease_in_out(t / duration)
+
+        x = int(
+            round(
+                start_x
+                + (end_x - start_x) * progress
+            )
+        )
+
+        y = int(
+            round(
+                start_y
+                + (end_y - start_y) * progress
+            )
+        )
+
+        x = max(0, min(max_x, x))
+        y = max(0, min(max_y, y))
+
+        return frame[
+            y : y + VIDEO_HEIGHT,
+            x : x + VIDEO_WIDTH,
+        ]
+
+    return base.transform(crop_frame)
+
+
+# ============================================================
+# STATIC HOLD
+# ============================================================
+
+
+def make_static_hold(image_path, duration, index):
+    """
+    Completely static scene.
+
+    This is useful when the image contains:
+    - lots of small details
+    - text
+    - diagrams
+    - faces
+    - screenshots
+    - architecture drawings
+    - maps
+
+    No camera movement happens.
+    """
+
+    image = prepare_exact_frame(image_path)
+
+    temp_path = save_temp_image(
+        image,
+        f"static_{index:05d}.jpg",
+    )
+
+    return ImageClip(
+        str(temp_path)
+    ).with_duration(duration)
+
+
+# ============================================================
+# SUBTLE PARALLAX
+# ============================================================
+
+
+def make_subtle_parallax(image_path, duration, index):
+    """
+    Very conservative parallax-style treatment.
+
+    This is NOT AI depth estimation.
+
+    It uses:
+      - one sharp foreground frame
+      - one slightly oversized soft background
+      - tiny background movement
+
+    The foreground itself remains completely stable.
+
+    This gives a subtle sense of depth without animated zoom.
+    """
+
+    # --------------------------------------------------------
+    # Sharp foreground
+    # --------------------------------------------------------
+
+    foreground = prepare_exact_frame(image_path)
+
+    foreground_path = save_temp_image(
+        foreground,
+        f"parallax_foreground_{index:05d}.jpg",
+    )
+
+    foreground_clip = ImageClip(
+        str(foreground_path)
+    ).with_duration(duration)
+
+    # --------------------------------------------------------
+    # Soft background
+    # --------------------------------------------------------
+
+    background = Image.open(image_path).convert("RGB")
+
+    background_width = VIDEO_WIDTH + 40
+    background_height = VIDEO_HEIGHT + 40
+
+    source_ratio = background.width / background.height
+    target_ratio = (
+        background_width / background_height
+    )
+
+    if source_ratio > target_ratio:
+        new_height = background_height
+        new_width = int(
+            background.width
+            * new_height
+            / background.height
+        )
+    else:
+        new_width = background_width
+        new_height = int(
+            background.height
+            * new_width
+            / background.width
+        )
+
+    background = background.resize(
+        (new_width, new_height),
+        Image.Resampling.LANCZOS,
+    )
+
+    left = max(
+        0,
+        (new_width - background_width) // 2,
+    )
+
+    top = max(
+        0,
+        (new_height - background_height) // 2,
+    )
+
+    background = background.crop(
+        (
+            left,
+            top,
+            left + background_width,
+            top + background_height,
+        )
+    )
+
+    # Soft background only.
+    background = background.filter(
+        ImageFilter.GaussianBlur(10)
+    )
+
+    background = ImageEnhance.Brightness(
+        background
+    ).enhance(0.96)
+
+    background_path = save_temp_image(
+        background,
+        f"parallax_background_{index:05d}.jpg",
+    )
+
+    background_clip = ImageClip(
+        str(background_path)
+    ).with_duration(duration)
+
+    # Tiny movement only: 4 pixels.
+    directions = [
+        (4, 4, 0, 0),
+        (0, 4, 4, 0),
+        (4, 0, 0, 4),
+        (0, 0, 4, 4),
+    ]
+
+    sx, sy, ex, ey = directions[
+        index % len(directions)
+    ]
+
+    def move_background(get_frame, t):
+        frame = get_frame(t)
+
+        progress = ease_in_out(t / duration)
+
+        x = int(
+            round(
+                sx
+                + (ex - sx) * progress
+            )
+        )
+
+        y = int(
+            round(
+                sy
+                + (ey - sy) * progress
+            )
+        )
+
+        return frame[
+            y : y + VIDEO_HEIGHT,
+            x : x + VIDEO_WIDTH,
+        ]
+
+    background_clip = background_clip.transform(
+        move_background
+    )
+
+    return CompositeVideoClip(
+        [
+            background_clip,
+            foreground_clip,
+        ],
+        size=(VIDEO_WIDTH, VIDEO_HEIGHT),
+    )
+
+
+# ============================================================
+# CROSSFADE
+# ============================================================
+
+
+def make_crossfade_scene(
+    image_path,
+    duration,
+    index,
+):
+    """
+    Static image intended to be combined with crossfade
+    transitions.
+
+    Crossfade is handled when scenes are joined.
+    """
+
+    return make_static_hold(
+        image_path,
+        duration,
+        index,
+    )
+
+
+# ============================================================
+# EFFECT SELECTION
+# ============================================================
+
+
+def choose_effect_for_scene(index):
+    """
+    Select an effect from EFFECTS_NEEDED.
+
+    CROSSFADE is a TRANSITION rather than a camera movement,
+    so when it appears in EFFECTS_NEEDED it is applied between
+    scenes rather than becoming the scene's camera effect.
+
+    Therefore the actual scene effects are selected from:
+
+        horizontal_pan
+        vertical_pan
+        diagonal_drift
+        static_hold
+        subtle_parallax
+
+    If the user chooses only ["crossfade"], every image is
+    displayed as a static hold with crossfade transitions.
+    """
+
+    scene_effects = [
+        effect
+        for effect in EFFECTS_NEEDED
+        if effect != "crossfade"
+    ]
+
+    if not scene_effects:
+        return "static_hold"
+
+    return scene_effects[
+        index % len(scene_effects)
+    ]
+
+
+# ============================================================
+# BUILD VIDEO
+# ============================================================
+
+
+def build_video(
+    images,
+    target_duration,
+):
+    """
+    Build enough scenes to cover target_duration.
+
+    Scene durations are distributed evenly.
+
+    The selected EFFECTS_NEEDED list is used repeatedly across
+    the available images.
+    """
+
+    if not images:
+        raise RuntimeError("No images available.")
+
+    # We use a practical number of scenes for the preview.
+    # For the full video, this uses all available images.
+    if PREVIEW_MODE:
+        # Select enough images to cover the preview.
+        # At least 1 and at most 4 scenes for a 10-second test.
+        scene_count = min(
+            len(images),
+            max(
+                1,
+                math.ceil(target_duration / 3.0),
+            ),
+        )
+        selected_images = images[:scene_count]
+    else:
+        selected_images = images
+
+    scene_duration = (
+        target_duration / len(selected_images)
+    )
+
+    clips = []
+
+    print("\n==============================")
+    print("CINEMATIC EFFECT ASSIGNMENT")
+    print("==============================")
+
+    for index, image_path in enumerate(
+        selected_images
+    ):
+        effect = choose_effect_for_scene(index)
+
+        print(
+            f"Scene {index + 1:03d}: "
+            f"{image_path.name} -> {effect}"
+        )
+
+        if effect == "horizontal_pan":
+            clip = make_pan_clip(
+                image_path,
+                scene_duration,
+                "horizontal_pan",
+                index,
+            )
+
+        elif effect == "vertical_pan":
+            clip = make_pan_clip(
+                image_path,
+                scene_duration,
+                "vertical_pan",
+                index,
+            )
+
+        elif effect == "diagonal_drift":
+            clip = make_pan_clip(
+                image_path,
+                scene_duration,
+                "diagonal_drift",
+                index,
+            )
+
+        elif effect == "static_hold":
+            clip = make_static_hold(
+                image_path,
+                scene_duration,
+                index,
+            )
+
+        elif effect == "subtle_parallax":
+            clip = make_subtle_parallax(
+                image_path,
+                scene_duration,
+                index,
+            )
+
+        else:
+            clip = make_static_hold(
+                image_path,
+                scene_duration,
+                index,
+            )
+
+        # Fade the first scene in.
+        if index == 0:
+            from moviepy.video.fx import FadeIn
+
+            clip = clip.with_effects(
+                [FadeIn(START_FADE)]
+            )
+
+        # Fade final scene out.
+        if index == len(selected_images) - 1:
+            from moviepy.video.fx import FadeOut
+
+            clip = clip.with_effects(
+                [FadeOut(END_FADE)]
+            )
+
+        clips.append(clip)
+
+    # --------------------------------------------------------
+    # Crossfade transitions
+    # --------------------------------------------------------
+
+    use_crossfade = (
+        "crossfade" in EFFECTS_NEEDED
+    )
+
+    if use_crossfade and len(clips) > 1:
+        print(
+            f"\nCrossfades: ENABLED "
+            f"({CROSSFADE_DURATION}s)"
+        )
+
+        final = clips[0]
+
+        for next_clip in clips[1:]:
+            final = concatenate_videoclips(
+                [
+                    final,
+                    next_clip,
+                ],
+                method="compose",
+                padding=-CROSSFADE_DURATION,
+            )
+    else:
+        print("\nCrossfades: DISABLED")
+
+        final = concatenate_videoclips(
+            clips,
+            method="compose",
+        )
+
+    # Force exact requested duration.
+    final = final.subclipped(
+        0,
+        min(target_duration, final.duration),
+    )
+
+    return final
+
+
+# ============================================================
+# AUDIO
+# ============================================================
+
+
+def attach_audio(
+    video,
+    audio_path,
+):
+    """
+    Attach narration.
+
+    In preview mode only the first 10 seconds of narration
+    are used.
+    """
+
+    if not audio_path.exists():
+        print(
+            f"\nWARNING: narration file not found:"
+            f"\n{audio_path}"
+        )
+
+        return video
+
+    audio = AudioFileClip(
+        str(audio_path)
+    )
+
+    if PREVIEW_MODE:
+        audio = audio.subclipped(
+            0,
+            min(
+                PREVIEW_SECONDS,
+                audio.duration,
+            ),
+        )
+
+    # Make sure audio does not exceed video.
+    audio = audio.subclipped(
+        0,
+        min(
+            audio.duration,
+            video.duration,
+        ),
+    )
+
+    return video.with_audio(audio)
+
+
+# ============================================================
+# RENDER
+# ============================================================
+
+
+def render_video(
+    video,
+    output_path,
+):
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    print("\n==============================")
+    print("RENDERING")
+    print("==============================")
+    print(f"Output: {output_path}")
+    print(f"FPS: {FPS}")
+    print(f"Bitrate: {BITRATE}")
+
+    video.write_videofile(
+        str(output_path),
+        fps=FPS,
+        codec="libx264",
+        audio_codec="aac",
+        bitrate=BITRATE,
+        preset="medium",
+        threads=os.cpu_count() or 4,
+        logger="bar",
+    )
+
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+
+def cleanup_temp_files():
+    """
+    Remove temporary cinematic image files.
+
+    Comment this out if you want to inspect the generated
+    intermediate images.
+    """
+
+    temp_dir = OUTPUT_DIR / "_cinematic_temp"
+
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+
+def main():
+
+    ensure_output_dir()
+
+    images = get_images()
+
+    print("\n")
+    print("==============================================")
+    print(" MAKE_VIDEO.PY")
+    print(" CINEMATIC NO-ZOOM VIDEO GENERATOR")
+    print("==============================================")
+
+    print(
+        f"\nImages found: {len(images)}"
+    )
+
+    print(
+        "\nEffects requested:"
+    )
+
+    for effect in EFFECTS_NEEDED:
+        print(f"  - {effect}")
+
+    if PREVIEW_MODE:
+        print(
+            f"\nPREVIEW MODE: ON "
+            f"({PREVIEW_SECONDS} seconds)"
+        )
+
+        target_duration = PREVIEW_SECONDS
+        output_path = PREVIEW_OUTPUT
+
+    else:
+        print("\nFULL VIDEO MODE: ON")
+
+        # Full video duration comes from narration.
+        if not NARRATION_PATH.exists():
+            raise RuntimeError(
+                "Full video mode requires "
+                f"{NARRATION_PATH}"
+            )
+
+        narration = AudioFileClip(
+            str(NARRATION_PATH)
+        )
+
+        target_duration = narration.duration
+
+        narration.close()
+
+        output_path = FINAL_OUTPUT
+
+    # --------------------------------------------------------
+    # Build cinematic video
+    # --------------------------------------------------------
+
+    video = build_video(
+        images,
+        target_duration,
+    )
+
+    # --------------------------------------------------------
+    # Attach narration
+    # --------------------------------------------------------
+
+    video = attach_audio(
+        video,
+        NARRATION_PATH,
+    )
+
+    # --------------------------------------------------------
+    # Render
+    # --------------------------------------------------------
+
+    render_video(
+        video,
+        output_path,
+    )
+
+    try:
+        video.close()
+    except Exception:
+        pass
+
+    cleanup_temp_files()
+
+    print("\n==============================================")
+    print("DONE")
+    print("==============================================")
+    print(f"Created: {output_path}")
+
+    if PREVIEW_MODE:
+        print(
+            "\nThis was the 10-second preview."
+        )
+        print(
+            "If it looks good, change:"
+        )
+        print(
+            "    PREVIEW_MODE = False"
+        )
+        print(
+            "and run the script again for the full video."
+        )
+
+
+if __name__ == "__main__":
+    main()
