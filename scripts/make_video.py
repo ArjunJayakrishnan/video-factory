@@ -211,7 +211,7 @@ FINAL_OUTPUT = OUTPUT_DIR / "final_video.mp4"
 
 VALID_EFFECTS = {
     "horizontal_pan",
-    # "diagonal_drift",
+    "diagonal_drift",
     "static_hold",
     "subtle_parallax",
     "crossfade",
