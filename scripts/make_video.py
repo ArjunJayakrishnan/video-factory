@@ -117,7 +117,7 @@ from moviepy import (
 
 # True  = render only a 10-second test
 # False = render the complete video
-PREVIEW_MODE = False
+PREVIEW_MODE = True
 
 PREVIEW_SECONDS = 20
 
