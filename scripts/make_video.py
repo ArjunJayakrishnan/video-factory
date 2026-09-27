@@ -102,6 +102,8 @@ from PIL import Image, ImageFilter, ImageEnhance
 
 from moviepy import (
     AudioFileClip,
+    CompositeAudioClip,
+    concatenate_audioclips,
     ImageClip,
     CompositeVideoClip,
     concatenate_videoclips,
@@ -119,7 +121,7 @@ from moviepy import (
 # False = render the complete video
 PREVIEW_MODE = True
 
-PREVIEW_SECONDS = 20
+PREVIEW_SECONDS = 10
 
 # ------------------------------------------------------------
 # CINEMATIC EFFECTS
@@ -190,7 +192,14 @@ END_FADE = 1.0
 IMAGE_DIR = Path("images")
 OUTPUT_DIR = Path("output")
 
-NARRATION_PATH = OUTPUT_DIR / "narration.mp3"
+# Audio files live in the current week folder.
+# The GitHub workflow runs this script from weeks/<week-date>, so these
+# resolve to weeks/<week-date>/narration.mp3 and music.mp3.
+NARRATION_PATH = Path("narration.mp3")
+MUSIC_PATH = Path("music.mp3")
+
+# Background music volume relative to the original music file.
+MUSIC_VOLUME = 0.15
 
 PREVIEW_OUTPUT = OUTPUT_DIR / "preview_TEST.mp4"
 FINAL_OUTPUT = OUTPUT_DIR / "final_video.mp4"
@@ -199,11 +208,9 @@ FINAL_OUTPUT = OUTPUT_DIR / "final_video.mp4"
 # OPTIONAL AUDIO / CAPTION SETTINGS
 # ============================================================
 
-# If your existing workflow already creates narration.mp3,
-# leave this as-is.
-#
-# The script will use:
-#     output/narration.mp3
+# Audio files expected in the current week folder:
+#     narration.mp3
+#     music.mp3
 
 # ============================================================
 # EFFECT VALIDATION
@@ -915,48 +922,45 @@ def build_video(
 # ============================================================
 
 
-def attach_audio(
-    video,
-    audio_path,
-):
-    """
-    Attach narration.
+def attach_audio(video, narration_path, music_path):
+    """Attach narration and looping background music."""
+    audio_tracks = []
 
-    In preview mode only the first 10 seconds of narration
-    are used.
-    """
+    # Narration is the primary track.
+    if narration_path.exists():
+        narration = AudioFileClip(str(narration_path))
+        narration = narration.subclipped(0, min(narration.duration, video.duration))
+        if PREVIEW_MODE:
+            narration = narration.subclipped(0, min(PREVIEW_SECONDS, narration.duration))
+        audio_tracks.append(narration)
+    else:
+        print(f"\nWARNING: narration file not found: {narration_path}")
 
-    if not audio_path.exists():
-        print(
-            f"\nWARNING: narration file not found:"
-            f"\n{audio_path}"
-        )
+    # Music plays underneath narration for the whole video.
+    if music_path.exists():
+        music_source = AudioFileClip(str(music_path))
+        target_duration = min(PREVIEW_SECONDS, video.duration) if PREVIEW_MODE else video.duration
 
+        if music_source.duration < target_duration:
+            loops_needed = math.ceil(target_duration / music_source.duration)
+            music = concatenate_audioclips([music_source] * loops_needed)
+        else:
+            music = music_source
+
+        music = music.subclipped(0, min(target_duration, music.duration))
+        music = music.with_volume_scaled(MUSIC_VOLUME)
+        audio_tracks.append(music)
+        print(f"Background music: {music_path} (volume={MUSIC_VOLUME})")
+    else:
+        print(f"\nWARNING: music file not found: {music_path}")
+
+    if not audio_tracks:
+        print("\nWARNING: No audio files found.")
         return video
 
-    audio = AudioFileClip(
-        str(audio_path)
-    )
-
-    if PREVIEW_MODE:
-        audio = audio.subclipped(
-            0,
-            min(
-                PREVIEW_SECONDS,
-                audio.duration,
-            ),
-        )
-
-    # Make sure audio does not exceed video.
-    audio = audio.subclipped(
-        0,
-        min(
-            audio.duration,
-            video.duration,
-        ),
-    )
-
-    return video.with_audio(audio)
+    combined_audio = CompositeAudioClip(audio_tracks)
+    combined_audio = combined_audio.subclipped(0, min(combined_audio.duration, video.duration))
+    return video.with_audio(combined_audio)
 
 
 # ============================================================
@@ -1032,6 +1036,10 @@ def main():
         f"\nImages found: {len(images)}"
     )
 
+    print(f"\nNarration: {NARRATION_PATH}")
+    print(f"Music:     {MUSIC_PATH}")
+    print(f"Music volume: {MUSIC_VOLUME}")
+
     print(
         "\nEffects requested:"
     )
@@ -1084,6 +1092,7 @@ def main():
     video = attach_audio(
         video,
         NARRATION_PATH,
+        MUSIC_PATH,
     )
 
     # --------------------------------------------------------
