@@ -252,8 +252,8 @@ MUSIC_PATH = WEEK_DIR / "music.mp3"
 # Background music volume relative to the original music file.
 MUSIC_VOLUME = 0.15
 
-PREVIEW_OUTPUT = WEEK_DIR / "preview_TEST.mp4"
-FINAL_OUTPUT = WEEK_DIR / "final_video.mp4"
+PREVIEW_OUTPUT = OUTPUT_DIR / "preview_TEST.mp4"
+FINAL_OUTPUT = OUTPUT_DIR / "final_video.mp4"
 
 # ============================================================
 # OPTIONAL AUDIO / CAPTION SETTINGS
