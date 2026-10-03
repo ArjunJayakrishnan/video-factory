@@ -65,7 +65,7 @@ jobs:
       - name: Copy metadata alongside the outputs
         run: cp "weeks/${{ steps.detect.outputs.week }}/metadata.json" "weeks/${{ steps.detect.outputs.week }}/output/metadata.json"
 
-      - name: Publish outputs as a GitHub Release
+      - name: Publish output as a GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.detect.outputs.week }}
