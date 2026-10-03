@@ -159,7 +159,7 @@ PREVIEW_SECONDS = 10
 #
 # Recommended starting setup:
 # EFFECTS_NEEDED = ["static_hold", "static_hold", "horizontal_pan", "static_hold", "crossfade"]
-EFFECTS_NEEDED = ["static_hold", "static_hold", "static_hold", "horizontal_pan", "static_hold", "crossfade"]
+EFFECTS_NEEDED = ["static_hold", "horizontal_pan", "static_hold", "static_hold","horizontal_pan", "static_hold", "crossfade"]
 
 # ------------------------------------------------------------
 # VIDEO
@@ -238,19 +238,9 @@ WORDS_PER_CAPTION_LINE = 6
 # Local-only hardcoded path (DO NOT COMMIT AS-IS):
 # WEEK_DIR = Path(r"D:\Coding\video-factory\weeks\03-10-2026")
 WEEK_DIR = Path(os.environ.get("WEEK_DIR", "."))
-#
-# Safe-to-commit alternative (defaults to "." so GitHub Actions is
-# unaffected, override locally with an env var instead):
-#   WEEK_DIR = Path(os.environ.get("WEEK_DIR", "."))
 
 IMAGE_DIR = WEEK_DIR / "images"
 OUTPUT_DIR = WEEK_DIR / "output"
-
-NARRATION_PATH = WEEK_DIR / "narration.mp3"
-MUSIC_PATH = WEEK_DIR / "music.mp3"
-
-# Background music volume relative to the original music file.
-MUSIC_VOLUME = 0.15
 
 PREVIEW_OUTPUT = OUTPUT_DIR / "preview_TEST.mp4"
 FINAL_OUTPUT = OUTPUT_DIR / "final_video.mp4"
@@ -262,6 +252,12 @@ FINAL_OUTPUT = OUTPUT_DIR / "final_video.mp4"
 # Audio files expected in the current week folder:
 #     narration.mp3
 #     music.mp3
+NARRATION_PATH = WEEK_DIR / "narration.mp3"
+MUSIC_PATH = WEEK_DIR / "music.mp3"
+
+# Background music volume relative to the original music file.
+MUSIC_VOLUME = 0.15
+
 
 # ============================================================
 # EFFECT VALIDATION
@@ -843,9 +839,17 @@ def build_video(
     else:
         selected_images = images
 
-    scene_duration = (
-        target_duration / len(selected_images)
-    )
+    use_crossfade = "crossfade" in EFFECTS_NEEDED
+
+    if use_crossfade and len(selected_images) > 1:
+        # Crossfades make consecutive scenes overlap by CROSSFADE_DURATION,
+        # which shrinks the total video length below target_duration.
+        # Compensate by making each scene slightly longer so the final
+        # video, after the overlaps, still matches the full narration.
+        total_overlap = CROSSFADE_DURATION * (len(selected_images) - 1)
+        scene_duration = (target_duration + total_overlap) / len(selected_images)
+    else:
+        scene_duration = target_duration / len(selected_images)
 
     clips = []
 
