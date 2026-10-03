@@ -65,11 +65,14 @@ jobs:
       - name: Copy metadata alongside the outputs
         run: cp "weeks/${{ steps.detect.outputs.week }}/metadata.json" "weeks/${{ steps.detect.outputs.week }}/output/metadata.json"
 
-      - name: Upload video outputs
-        uses: actions/upload-artifact@v4
+      - name: Publish outputs as a GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: video-${{ steps.detect.outputs.week }}
-          path: |
+          tag_name: ${{ steps.detect.outputs.week }}
+          name: "Video build - ${{ steps.detect.outputs.week }}"
+          files: |
             weeks/${{ steps.detect.outputs.week }}/output/*.mp4
             weeks/${{ steps.detect.outputs.week }}/output/thumbnail.jpg
             weeks/${{ steps.detect.outputs.week }}/output/metadata.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
