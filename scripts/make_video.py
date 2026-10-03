@@ -85,6 +85,14 @@ The full output is:
 
     output/final_video.mp4
 
+CAPTIONS
+--------
+After the base video is rendered, narration.mp3 is transcribed with
+Whisper (word-level timestamps), a styled .ass karaoke-highlight
+subtitle file is generated, and it's burned into the video with ffmpeg
+as a final pass. If narration.mp3 is missing, captions are skipped and
+the uncaptioned render is used as the final output.
+
 REQUIREMENTS
 ------------
 pip install moviepy pillow elevenlabs openai-whisper
@@ -99,6 +107,8 @@ import subprocess
 from pathlib import Path
 
 from PIL import Image, ImageFilter, ImageEnhance
+
+import whisper
 
 from moviepy import (
     AudioFileClip,
@@ -148,14 +158,8 @@ PREVIEW_SECONDS = 10
 # ]
 #
 # Recommended starting setup:
-EFFECTS_NEEDED = [
-    "horizontal_pan",
-    "vertical_pan",
-    "diagonal_drift",
-    "static_hold",
-    "subtle_parallax",
-    "crossfade",
-]
+# EFFECTS_NEEDED = ["static_hold", "static_hold", "horizontal_pan", "static_hold", "crossfade"]
+EFFECTS_NEEDED = ["static_hold", "static_hold", "static_hold", "horizontal_pan", "static_hold", "crossfade"]
 
 # ------------------------------------------------------------
 # VIDEO
@@ -186,23 +190,70 @@ START_FADE = 0.25
 END_FADE = 1.0
 
 # ------------------------------------------------------------
+# CAPTIONS
+# ------------------------------------------------------------
+
+WHISPER_MODEL_SIZE = "small"   # tiny / base / small / medium / large -- bigger = more accurate but slower
+
+CAPTION_FONT_NAME = "DejaVu Sans Bold"   # available by default on the Linux GitHub runner
+CAPTION_FONT_SIZE = 56
+CAPTION_HIGHLIGHT_COLOR = "&H0000D7FF"   # gold -- shown on a word once it's been spoken
+CAPTION_DEFAULT_COLOR = "&H00FFFFFF"     # white -- default/unspoken text color
+CAPTION_OUTLINE_COLOR = "&H00000000"     # black outline
+CAPTION_MARGIN_V = 80
+WORDS_PER_CAPTION_LINE = 6
+
+# ------------------------------------------------------------
 # INPUT / OUTPUT
 # ------------------------------------------------------------
 
-IMAGE_DIR = Path("images")
-OUTPUT_DIR = Path("output")
+# IMAGE_DIR = Path("images")
+# OUTPUT_DIR = Path("output")
 
-# Audio files live in the current week folder.
-# The GitHub workflow runs this script from weeks/<week-date>, so these
-# resolve to weeks/<week-date>/narration.mp3 and music.mp3.
-NARRATION_PATH = Path("narration.mp3")
-MUSIC_PATH = Path("music.mp3")
+# # Audio files live in the current week folder.
+# # The GitHub workflow runs this script from weeks/<week-date>, so these
+# # resolve to weeks/<week-date>/narration.mp3 and music.mp3.
+# NARRATION_PATH = Path("narration.mp3")
+# MUSIC_PATH = Path("music.mp3")
+
+# # Background music volume relative to the original music file.
+# MUSIC_VOLUME = 0.15
+
+# PREVIEW_OUTPUT = OUTPUT_DIR / "preview_TEST.mp4"
+# FINAL_OUTPUT = OUTPUT_DIR / "final_video.mp4"
+
+
+# ------------------------------------------------------------
+# INPUT / OUTPUT for testing
+# ------------------------------------------------------------
+#
+# WEEK_DIR lets you point this script at a specific week folder
+# without needing to `cd` into it first (useful when testing locally
+# in VS Code). GitHub Actions already `cd`s into the right week
+# folder before running this script via `working-directory`, so if
+# you commit this file, switch WEEK_DIR back to the env-var version
+# below -- otherwise build-video.yml will break looking for this
+# Windows path on the Linux runner.
+#
+# Local-only hardcoded path (DO NOT COMMIT AS-IS):
+# WEEK_DIR = Path(r"D:\Coding\video-factory\weeks\03-10-2026")
+WEEK_DIR = Path(os.environ.get("WEEK_DIR", "."))
+#
+# Safe-to-commit alternative (defaults to "." so GitHub Actions is
+# unaffected, override locally with an env var instead):
+#   WEEK_DIR = Path(os.environ.get("WEEK_DIR", "."))
+
+IMAGE_DIR = WEEK_DIR / "images"
+OUTPUT_DIR = WEEK_DIR / "output"
+
+NARRATION_PATH = WEEK_DIR / "narration.mp3"
+MUSIC_PATH = WEEK_DIR / "music.mp3"
 
 # Background music volume relative to the original music file.
 MUSIC_VOLUME = 0.15
 
-PREVIEW_OUTPUT = OUTPUT_DIR / "preview_TEST.mp4"
-FINAL_OUTPUT = OUTPUT_DIR / "final_video.mp4"
+PREVIEW_OUTPUT = WEEK_DIR / "preview_TEST.mp4"
+FINAL_OUTPUT = WEEK_DIR / "final_video.mp4"
 
 # ============================================================
 # OPTIONAL AUDIO / CAPTION SETTINGS
@@ -884,29 +935,15 @@ def build_video(
     )
 
     if use_crossfade and len(clips) > 1:
-        print(
-            f"\nCrossfades: ENABLED "
-            f"({CROSSFADE_DURATION}s)"
-        )
-
-        final = clips[0]
-
-        for next_clip in clips[1:]:
-            final = concatenate_videoclips(
-                [
-                    final,
-                    next_clip,
-                ],
-                method="compose",
-                padding=-CROSSFADE_DURATION,
-            )
-    else:
-        print("\nCrossfades: DISABLED")
-
+        print(f"\nCrossfades: ENABLED ({CROSSFADE_DURATION}s)")
         final = concatenate_videoclips(
             clips,
             method="compose",
+            padding=-CROSSFADE_DURATION,
         )
+    else:
+        print("\nCrossfades: DISABLED")
+        final = concatenate_videoclips(clips, method="compose")
 
     # Force exact requested duration.
     final = final.subclipped(
@@ -994,6 +1031,124 @@ def render_video(
         threads=os.cpu_count() or 4,
         logger="bar",
     )
+
+
+# ============================================================
+# CAPTIONS
+# ============================================================
+
+
+def transcribe_narration(narration_path):
+    print("\n==============================")
+    print("TRANSCRIBING NARRATION (Whisper)")
+    print("==============================")
+    print(f"Model: {WHISPER_MODEL_SIZE}")
+
+    model = whisper.load_model(WHISPER_MODEL_SIZE)
+    result = model.transcribe(str(narration_path), word_timestamps=True)
+
+    words = []
+    for segment in result["segments"]:
+        for word_info in segment.get("words", []):
+            text = word_info["word"].strip()
+            if not text:
+                continue
+            words.append({
+                "text": text,
+                "start": word_info["start"],
+                "end": word_info["end"],
+            })
+
+    print(f"Transcribed {len(words)} words.")
+    return words
+
+
+def _format_ass_time(seconds):
+    seconds = max(0.0, seconds)
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    centisecs = int(round((secs - int(secs)) * 100))
+    return f"{hours:01d}:{minutes:02d}:{int(secs):02d}.{centisecs:02d}"
+
+
+def generate_ass_captions(words, ass_path):
+    print("\n==============================")
+    print("GENERATING CAPTIONS (.ass)")
+    print("==============================")
+
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {VIDEO_WIDTH}\n"
+        f"PlayResY: {VIDEO_HEIGHT}\n"
+        "ScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Captions,{CAPTION_FONT_NAME},{CAPTION_FONT_SIZE},{CAPTION_HIGHLIGHT_COLOR},"
+        f"{CAPTION_DEFAULT_COLOR},{CAPTION_OUTLINE_COLOR},&H00000000,1,0,0,0,100,100,0,0,1,3,0,2,"
+        f"40,40,{CAPTION_MARGIN_V},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+
+    lines = [
+        words[i:i + WORDS_PER_CAPTION_LINE]
+        for i in range(0, len(words), WORDS_PER_CAPTION_LINE)
+    ]
+
+    events = []
+    for line_words in lines:
+        if not line_words:
+            continue
+
+        line_start = line_words[0]["start"]
+        line_end = line_words[-1]["end"]
+
+        karaoke_text = ""
+        for word in line_words:
+            duration_cs = max(1, int(round((word["end"] - word["start"]) * 100)))
+            karaoke_text += f"{{\\k{duration_cs}}}{word['text']} "
+
+        events.append(
+            f"Dialogue: 0,{_format_ass_time(line_start)},{_format_ass_time(line_end)},"
+            f"Captions,,0,0,0,,{karaoke_text.strip()}"
+        )
+
+    with open(ass_path, "w", encoding="utf-8") as f:
+        f.write(header)
+        f.write("\n".join(events))
+        f.write("\n")
+
+    print(f"Captions written: {ass_path} ({len(events)} lines)")
+
+
+def burn_captions(video_path, ass_path, output_path):
+    print("\n==============================")
+    print("BURNING CAPTIONS")
+    print("==============================")
+
+    render_dir = video_path.parent
+
+    # Run from inside the output folder and use bare relative filenames --
+    # this avoids the Windows drive-letter colon-escaping problem in
+    # ffmpeg's filter-graph string entirely.
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_path.name,
+        "-vf", f"ass={ass_path.name}",
+        "-c:v", "libx264",
+        "-c:a", "copy",
+        output_path.name,
+    ]
+
+    print(f"Running (from {render_dir}):")
+    print("  " + " ".join(cmd))
+
+    subprocess.run(cmd, check=True, cwd=render_dir)
+    print(f"Captioned video saved: {output_path}")
 
 
 # ============================================================
@@ -1096,18 +1251,58 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Render
+    # Render the base video (no captions yet)
     # --------------------------------------------------------
 
-    render_video(
-        video,
-        output_path,
+    no_captions_path = output_path.with_name(
+        output_path.stem + "_nocaptions" + output_path.suffix
     )
+
+    render_video(video, no_captions_path)
 
     try:
         video.close()
     except Exception:
         pass
+
+    # --------------------------------------------------------
+    # Captions
+    # --------------------------------------------------------
+
+    if NARRATION_PATH.exists():
+        if PREVIEW_MODE:
+            # Don't transcribe the whole narration just to use the first
+            # few seconds of it -- cut a short clip first.
+            preview_narration_path = OUTPUT_DIR / "_preview_narration.mp3"
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", str(NARRATION_PATH),
+                    "-t", str(PREVIEW_SECONDS),
+                    str(preview_narration_path),
+                ],
+                check=True,
+            )
+            words = transcribe_narration(preview_narration_path)
+        else:
+            words = transcribe_narration(NARRATION_PATH)
+
+        words = [w for w in words if w["start"] < target_duration]
+
+        if words:
+            # Save the captions file next to the video itself, not a fixed
+            # OUTPUT_DIR -- PREVIEW_OUTPUT/FINAL_OUTPUT may live in a
+            # different folder than OUTPUT_DIR, and burn_captions() runs
+            # ffmpeg from wherever the video actually is.
+            ass_path = output_path.parent / "captions.ass"
+            generate_ass_captions(words, ass_path)
+            burn_captions(no_captions_path, ass_path, output_path)
+        else:
+            print("\nWARNING: No words transcribed -- skipping captions.")
+            shutil.copy(no_captions_path, output_path)
+    else:
+        print(f"\nWARNING: narration not found -- skipping captions: {NARRATION_PATH}")
+        shutil.copy(no_captions_path, output_path)
 
     cleanup_temp_files()
 
