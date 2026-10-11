@@ -158,8 +158,7 @@ PREVIEW_SECONDS = 10
 # ]
 #
 # Recommended starting setup:
-# EFFECTS_NEEDED = ["static_hold", "static_hold", "horizontal_pan", "static_hold", "crossfade"]
-EFFECTS_NEEDED = ["static_hold", "horizontal_pan", "static_hold", "static_hold","horizontal_pan", "static_hold", "crossfade"]
+EFFECTS_NEEDED = ["horizontal_pan", "static_hold","horizontal_pan", "static_hold", "crossfade"]
 
 # ------------------------------------------------------------
 # VIDEO
@@ -256,7 +255,7 @@ NARRATION_PATH = WEEK_DIR / "narration.mp3"
 MUSIC_PATH = WEEK_DIR / "music.mp3"
 
 # Background music volume relative to the original music file.
-MUSIC_VOLUME = 0.15
+MUSIC_VOLUME = 0.22
 
 
 # ============================================================
