@@ -255,7 +255,7 @@ NARRATION_PATH = WEEK_DIR / "narration.mp3"
 MUSIC_PATH = WEEK_DIR / "music.mp3"
 
 # Background music volume relative to the original music file.
-MUSIC_VOLUME = 0.22
+MUSIC_VOLUME = 0.15
 
 
 # ============================================================
