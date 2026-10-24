@@ -1,6 +1,6 @@
 import os
 
-folder = r"D:\Coding\youtube\images"
+folder = "D:/Coding/video-factory/weeks/25-10-2026/images"
 
 files = sorted(os.listdir(folder))
 
