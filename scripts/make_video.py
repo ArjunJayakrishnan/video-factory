@@ -235,7 +235,7 @@ WORDS_PER_CAPTION_LINE = 6
 # Windows path on the Linux runner.
 #
 # Local-only hardcoded path (DO NOT COMMIT AS-IS):
-# WEEK_DIR = Path(r"D:\Coding\video-factory\weeks\03-10-2026")
+# WEEK_DIR = Path("D:/Coding/video-factory/weeks/25-10-2026")
 WEEK_DIR = Path(os.environ.get("WEEK_DIR", "."))
 
 IMAGE_DIR = WEEK_DIR / "images"
@@ -255,7 +255,7 @@ NARRATION_PATH = WEEK_DIR / "narration.mp3"
 MUSIC_PATH = WEEK_DIR / "music.mp3"
 
 # Background music volume relative to the original music file.
-MUSIC_VOLUME = 0.15
+MUSIC_VOLUME = 0.10
 
 
 # ============================================================
