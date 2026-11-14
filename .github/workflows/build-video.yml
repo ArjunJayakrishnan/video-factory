@@ -50,17 +50,31 @@ jobs:
           echo "Building week folder: $WEEK"
           echo "week=$WEEK" >> "$GITHUB_OUTPUT"
 
-      - name: Build the video (preview or full, based on PREVIEW_MODE in the script)
-        working-directory: weeks/${{ steps.detect.outputs.week }}
-        run: python ../../scripts/make_video.py
-
+      # Runs BEFORE the long video build so a bad image path or extension in
+      # metadata.json fails in seconds instead of after ~50 minutes.
       - name: Build the thumbnail
         working-directory: weeks/${{ steps.detect.outputs.week }}
         run: |
+          mkdir -p output
           python ../../scripts/make_thumbnail.py \
             "$(python -c "import json;print(json.load(open('metadata.json'))['thumbnail_source_image'])")" \
             "$(python -c "import json;print(json.load(open('metadata.json'))['thumbnail_text'])")" \
             "output/thumbnail.jpg"
+
+      - name: Build the video (preview or full, based on PREVIEW_MODE in the script)
+        working-directory: weeks/${{ steps.detect.outputs.week }}
+        run: python ../../scripts/make_video.py
+
+      # Saves the outputs even if a later step fails, so you never have to
+      # rebuild the video just because the release step broke.
+      - name: Save the outputs as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-${{ steps.detect.outputs.week }}
+          path: weeks/${{ steps.detect.outputs.week }}/output/
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Copy metadata alongside the outputs
         run: cp "weeks/${{ steps.detect.outputs.week }}/metadata.json" "weeks/${{ steps.detect.outputs.week }}/output/metadata.json"
