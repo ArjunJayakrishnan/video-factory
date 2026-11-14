@@ -131,7 +131,7 @@ from moviepy import (
 # False = render the complete video
 PREVIEW_MODE = False
 
-PREVIEW_SECONDS = 10
+PREVIEW_SECONDS = 15
 
 # ------------------------------------------------------------
 # CINEMATIC EFFECTS
@@ -235,7 +235,7 @@ WORDS_PER_CAPTION_LINE = 6
 # Windows path on the Linux runner.
 #
 # Local-only hardcoded path (DO NOT COMMIT AS-IS):
-# WEEK_DIR = Path("D:/Coding/video-factory/weeks/25-10-2026")
+# WEEK_DIR = Path("D:/Coding/video-factory/weeks/15-11-2026")
 WEEK_DIR = Path(os.environ.get("WEEK_DIR", "."))
 
 IMAGE_DIR = WEEK_DIR / "images"
